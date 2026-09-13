@@ -1,0 +1,27 @@
+[tasks.build]
+clear = true
+dependencies = ["cargo-build-release", "copy-so-release"]
+
+[tasks.cargo-build]
+command = "cargo"
+args = ["build", "--target", "i686-unknown-linux-gnu"]
+
+[tasks.copy-so]
+script = '''
+mkdir -p /home/$USER/.local/share/Steam/steamapps/common/Half-Life/cstrike/cl_dlls/
+cp target/i686-unknown-linux-gnu/debug/libclient.so /home/$USER/.local/share/Steam/steamapps/common/Half-Life/cstrike/cl_dlls/client.so
+'''
+
+[tasks.build-release]
+clear = true
+dependencies = ["cargo-build-release", "copy-so-release"]
+
+[tasks.cargo-build-release]
+command = "cargo"
+args = ["build", "--release", "--target", "i686-unknown-linux-gnu"]
+
+[tasks.copy-so-release]
+script = '''
+mkdir -p /home/$USER/.local/share/Steam/steamapps/common/Half-Life/cstrike/cl_dlls/
+cp target/i686-unknown-linux-gnu/release/libclient.so /home/$USER/.local/share/Steam/steamapps/common/Half-Life/cstrike/cl_dlls/client.so
+'''
