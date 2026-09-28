@@ -44,7 +44,7 @@ pub type LoaderConnect =
     unsafe extern "C" fn(*const ClientInterface, *mut RenderInterface, usize, usize) -> i32;
 
 pub unsafe fn render_load() {
-    let mut path_buf = [0i8; 512];
+    let mut path_buf = [0 as std::os::raw::c_char; 512];
     let len = plat_current_module_name(path_buf.as_mut_ptr(), 512);
     if len == 0 {
         return;
@@ -78,7 +78,7 @@ pub unsafe fn render_load() {
         return;
     }
 
-    let connect_symbol = plat_dlsym(handle, c"LoaderConnect".as_ptr());
+    let connect_symbol = plat_dlsym(handle, b"LoaderConnect\0".as_ptr() as _);
     if connect_symbol.is_null() {
         plat_dlclose(handle);
         return;

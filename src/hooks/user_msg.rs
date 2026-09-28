@@ -67,8 +67,34 @@ make_og!(
     OG_BRASS,
     OG_HIDE_WEAPON,
     OG_NVG_TOGGLE,
-    OG_DAMAGE,
+    OG_SCREEN_FADE,
 );
+
+pub unsafe extern "C" fn hk_msg_func_screen_fade(
+    name: *const c_char,
+    size: c_int,
+    pbuf: *mut c_void,
+) -> c_int {
+    if !pbuf.is_null() && size >= 8 {
+        let slice = std::slice::from_raw_parts(pbuf as *const u8, size as usize);
+        let mut reader = crate::utils::msg::MsgRead::new(slice);
+        let duration = reader.read_short().unwrap_or(0) as f32 * (1.0 / 4096.0);
+        let hold_time = reader.read_short().unwrap_or(0) as f32 * (1.0 / 4096.0);
+        let _flags = reader.read_short().unwrap_or(0);
+        let r = reader.read_byte().unwrap_or(0);
+        let g = reader.read_byte().unwrap_or(0);
+        let b = reader.read_byte().unwrap_or(0);
+        let a = reader.read_byte().unwrap_or(0);
+
+        // Flashbang screenfade is white (255, 255, 255) with high alpha
+        if r > 200 && g > 200 && b > 200 && a > 150 {
+            let total_dur = (duration + hold_time + 3.0).clamp(3.0, 9.5);
+            let intensity = (a as f32 / 255.0).clamp(0.5, 1.0);
+            crate::audio::hrtf::trigger_grenade_concussion(intensity, total_dur);
+        }
+    }
+    call_og!(OG_SCREEN_FADE, name, size, pbuf)
+}
 
 user_msg_hook!(hk_msg_func_cur_weapon, OG_CUR_WEAPON, process_cur_weapon);
 user_msg_hook!(hk_msg_func_hide_weapon, OG_HIDE_WEAPON, process_hide_weapon);
@@ -123,51 +149,6 @@ pub unsafe extern "C" fn hk_msg_func_brass(
     call_og!(OG_BRASS, name, size, pbuf)
 }
 
-pub unsafe extern "C" fn hk_msg_func_damage(
-    name: *const c_char,
-    size: c_int,
-    pbuf: *mut c_void,
-) -> c_int {
-    if !pbuf.is_null() && size >= 2 {
-        let slice = std::slice::from_raw_parts(pbuf as *const u8, size as usize);
-        let health_take = slice.get(1).copied().unwrap_or(0);
-        if health_take > 0 {
-            let listener = crate::engine::sound_hook::get_listener_state();
-            let pain_sound = pick_pain_sound(health_take);
-            let volume = if crate::utils::cvars::HRTF_ENABLE.enabled() {
-                crate::utils::cvars::HRTF_VOLUME.value_or(1.0)
-            } else {
-                1.0
-            };
-            crate::engine::sound_hook::trigger_pain_sound(pain_sound, volume, listener.origin);
-            if crate::utils::cvars::HRTF_DEBUG.value() != 0.0 {
-                crate::con_println!(
-                    "[HRTF Damage] Player took {} dmg -> Pain sound '{}'",
-                    health_take,
-                    pain_sound
-                );
-            }
-        }
-    }
-    call_og!(OG_DAMAGE, name, size, pbuf)
-}
-
-static PAIN_SOUND_ROTATION: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-const PAIN_SOUNDS: [&str; 6] = [
-    "player/pl_pain1.wav",
-    "player/pl_pain2.wav",
-    "player/pl_pain3.wav",
-    "player/pl_pain4.wav",
-    "player/pl_pain5.wav",
-    "player/pl_pain6.wav",
-];
-
-fn pick_pain_sound(health_take: u8) -> &'static str {
-    let rotation = PAIN_SOUND_ROTATION.fetch_add(1, Ordering::Relaxed);
-    let idx = (health_take as u32).wrapping_add(rotation) as usize % PAIN_SOUNDS.len();
-    PAIN_SOUNDS[idx]
-}
-
 pub unsafe extern "C" fn hk_hook_user_msg(msg_name: *const c_char, pfn: PfnUserMsgHook) -> c_int {
     if msg_name.is_null() {
         return 0;
@@ -178,9 +159,9 @@ pub unsafe extern "C" fn hk_hook_user_msg(msg_name: *const c_char, pfn: PfnUserM
         "CurWeapon" => store_og_and_hook!(OG_CUR_WEAPON, pfn, hk_msg_func_cur_weapon),
         "TeamInfo" => store_og_and_hook!(OG_TEAM_INFO, pfn, hk_msg_func_team_info),
         "Brass" => store_og_and_hook!(OG_BRASS, pfn, hk_msg_func_brass),
+        "ScreenFade" => store_og_and_hook!(OG_SCREEN_FADE, pfn, hk_msg_func_screen_fade),
         "HideWeapon" => store_og_and_hook!(OG_HIDE_WEAPON, pfn, hk_msg_func_hide_weapon),
         "NVGToggle" => store_og_and_hook!(OG_NVG_TOGGLE, pfn, hk_msg_func_nvg_toggle),
-        "Damage" => store_og_and_hook!(OG_DAMAGE, pfn, hk_msg_func_damage),
         _ => pfn,
     };
 

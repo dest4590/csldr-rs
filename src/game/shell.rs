@@ -1,4 +1,4 @@
-use crate::utils::maths::{radians, Vec3};
+use crate::utils::maths::Vec3;
 use crate::utils::msg::MsgRead;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -56,7 +56,7 @@ pub fn hk_temp_model_recalc(righthand: bool) -> (Vec3, Vec3) {
     RECALC_SHELL.store(false, Ordering::Relaxed);
 
     let rot_deg = SHELL_ROTATION.lock().map_or(0.0, |r| *r);
-    let rot = radians(rot_deg);
+    let rot = rot_deg.to_radians();
     let (sine, cosine) = rot.sin_cos();
 
     let mut orig = SHELL_ORIGIN.lock().map_or([0.0, 0.0, 0.0], |o| *o);

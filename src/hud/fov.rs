@@ -1,5 +1,4 @@
 use crate::utils::cvars::FOV_HORPLUS;
-use crate::utils::maths::{degrees, radians};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Mutex;
 
@@ -32,7 +31,7 @@ pub fn get_current_fov(screen_width: i32, screen_height: i32) -> f32 {
     let h = screen_height as f32;
 
     if FOV_HORPLUS.value() != 0.0 && h > 0.0 && (w / h != 0.75) {
-        degrees(((radians(state.current_fov) / 2.0).tan() * (w / h * 0.75)).atan()) * 2.0
+        (((state.current_fov.to_radians() / 2.0).tan() * (w / h * 0.75)).atan() * 2.0).to_degrees()
     } else {
         state.current_fov
     }

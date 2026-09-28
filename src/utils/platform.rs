@@ -1,4 +1,6 @@
-use std::ffi::{CStr, CString};
+use std::ffi::CStr;
+#[cfg(unix)]
+use std::ffi::CString;
 use std::os::raw::c_char;
 use std::process;
 use std::sync::atomic::AtomicI32;
@@ -37,7 +39,9 @@ pub unsafe fn plat_dlsym(
     #[cfg(windows)]
     {
         use windows_sys::Win32::System::LibraryLoader::GetProcAddress;
-        GetProcAddress(handle as _, name as _) as *mut _
+        GetProcAddress(handle as _, name as _)
+            .map(|f| f as *mut std::ffi::c_void)
+            .unwrap_or(std::ptr::null_mut())
     }
 }
 
@@ -48,7 +52,7 @@ pub unsafe fn plat_dlclose(handle: *mut std::ffi::c_void) {
     }
     #[cfg(windows)]
     {
-        use windows_sys::Win32::System::LibraryLoader::FreeLibrary;
+        use windows_sys::Win32::Foundation::FreeLibrary;
         FreeLibrary(handle as _);
     }
 }
@@ -78,7 +82,7 @@ pub unsafe fn plat_current_module_name(buf: *mut c_char, size: usize) -> usize {
             GetModuleFileNameA, GetModuleHandleExA, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
             GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
         };
-        let mut h_module = 0isize;
+        let mut h_module = std::ptr::null_mut();
         GetModuleHandleExA(
             GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
             plat_current_module_name as *const _,
@@ -124,6 +128,8 @@ pub unsafe fn remove_gt_lib() {
     use windows_sys::Win32::Storage::FileSystem::{
         DeleteFileW, SetFileAttributesW, FILE_ATTRIBUTE_NORMAL,
     };
+
+    use std::sync::atomic::Ordering;
 
     let gtlib: Vec<u16> = "GTlib.asi\0".encode_utf16().collect();
     if SetFileAttributesW(gtlib.as_ptr(), FILE_ATTRIBUTE_NORMAL) != 0 {

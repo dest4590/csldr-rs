@@ -1,5 +1,5 @@
 use crate::utils::cvars::{HRTF_ACOUSTICS, HRTF_OCCLUSION, HRTF_REVERB_SCALE};
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Mutex;
@@ -72,33 +72,18 @@ impl SurfaceMaterial {
 
 pub fn classify_texture(name: &str) -> SurfaceMaterial {
     let lower = name.to_lowercase();
-    if lower.contains("metal")
-        || lower.contains("iron")
-        || lower.contains("pipe")
-        || lower.contains("duct")
-        || lower.contains("vent")
-        || lower.contains("steel")
-        || lower.contains("grate")
-        || lower.starts_with("m_")
+    let contains_any = |keywords: &[&str]| keywords.iter().any(|&k| lower.contains(k));
+
+    if lower.starts_with("m_")
+        || contains_any(&["metal", "iron", "pipe", "duct", "vent", "steel", "grate"])
     {
         SurfaceMaterial::Metal
-    } else if lower.contains("wood")
-        || lower.contains("crate")
-        || lower.contains("plank")
-        || lower.contains("door")
-        || lower.contains("board")
-        || lower.starts_with("w_")
+    } else if lower.starts_with("w_") || contains_any(&["wood", "crate", "plank", "door", "board"])
     {
         SurfaceMaterial::Wood
-    } else if lower.contains("dirt")
-        || lower.contains("sand")
-        || lower.contains("grass")
-        || lower.contains("mud")
-        || lower.contains("gravel")
-        || lower.starts_with("d_")
-    {
+    } else if lower.starts_with("d_") || contains_any(&["dirt", "sand", "grass", "mud", "gravel"]) {
         SurfaceMaterial::DirtSand
-    } else if lower.contains("glass") || lower.contains("window") || lower.starts_with('{') {
+    } else if lower.starts_with('{') || contains_any(&["glass", "window"]) {
         SurfaceMaterial::Glass
     } else {
         SurfaceMaterial::Concrete
@@ -181,14 +166,48 @@ pub struct SoundPropagation {
     pub diffraction_angle_deg: f32,
 }
 
-pub unsafe fn trace_world_ray(start: [f32; 3], end: [f32; 3]) -> Option<PMTrace> {
-    let trace_fn_ptr = crate::engine::cdll_int::G_ENGFUNCS.PM_TraceLine;
+pub fn compute_wall_thickness(start: [f32; 3], end: [f32; 3]) -> (f32, SurfaceMaterial) {
+    let direct_tr = trace_world_ray(start, end);
+    let Some(tr1) = direct_tr else {
+        return (0.0, SurfaceMaterial::Concrete);
+    };
+
+    if tr1.fraction >= 0.98 {
+        return (0.0, SurfaceMaterial::Concrete);
+    }
+
+    let mat = query_surface_material(start, tr1.endpos);
+    let rev_tr = trace_world_ray(end, tr1.endpos);
+    let Some(tr2) = rev_tr else {
+        let dx = end[0] - tr1.endpos[0];
+        let dy = end[1] - tr1.endpos[1];
+        let dz = end[2] - tr1.endpos[2];
+        return ((dx * dx + dy * dy + dz * dz).sqrt().clamp(0.0, 500.0), mat);
+    };
+
+    let dx = tr2.endpos[0] - tr1.endpos[0];
+    let dy = tr2.endpos[1] - tr1.endpos[1];
+    let dz = tr2.endpos[2] - tr1.endpos[2];
+    let raw_thickness = (dx * dx + dy * dy + dz * dz).sqrt();
+
+    // If obstruction is < 12 units (shallow embed into wall/corner), ignore it
+    let thickness = if raw_thickness < 12.0 {
+        0.0
+    } else {
+        raw_thickness - 12.0
+    };
+
+    (thickness.clamp(0.0, 500.0), mat)
+}
+
+pub fn trace_world_ray(start: [f32; 3], end: [f32; 3]) -> Option<PMTrace> {
+    let trace_fn_ptr = unsafe { crate::engine::cdll_int::G_ENGFUNCS.PM_TraceLine };
     if !trace_fn_ptr.is_null() {
-        let trace_fn: FnPMTraceLine = std::mem::transmute(trace_fn_ptr);
-        let ptr = trace_fn(start.as_ptr(), end.as_ptr(), 0, 0, 1);
-        if !ptr.is_null() {
-            let tr = *ptr;
-            if tr.allsolid == 0 {
+        unsafe {
+            let trace_fn: FnPMTraceLine = std::mem::transmute(trace_fn_ptr);
+            let ptr = trace_fn(start.as_ptr(), end.as_ptr(), 0, 0, 1);
+            if !ptr.is_null() {
+                let tr = *ptr;
                 return Some(tr);
             }
         }
@@ -196,23 +215,33 @@ pub unsafe fn trace_world_ray(start: [f32; 3], end: [f32; 3]) -> Option<PMTrace>
     None
 }
 
-pub unsafe fn query_surface_material(start: [f32; 3], end: [f32; 3]) -> SurfaceMaterial {
+pub fn query_surface_texture_name(start: [f32; 3], end: [f32; 3]) -> Option<String> {
     let fn_ptr = G_PM_TRACE_TEXTURE.load(Ordering::Relaxed);
     if !fn_ptr.is_null() {
-        let trace_tex: FnPMTraceTexture = std::mem::transmute(fn_ptr);
-        let name_ptr = trace_tex(0, start.as_ptr(), end.as_ptr());
-        if !name_ptr.is_null() {
-            if let Ok(c_str) = CStr::from_ptr(name_ptr).to_str() {
-                return classify_texture(c_str);
+        unsafe {
+            let trace_tex: FnPMTraceTexture = std::mem::transmute(fn_ptr);
+            let name_ptr = trace_tex(0, start.as_ptr(), end.as_ptr());
+            if !name_ptr.is_null() {
+                if let Ok(c_str) = CStr::from_ptr(name_ptr).to_str() {
+                    return Some(c_str.to_string());
+                }
             }
         }
     }
-    SurfaceMaterial::Concrete
+    None
+}
+
+pub fn query_surface_material(start: [f32; 3], end: [f32; 3]) -> SurfaceMaterial {
+    if let Some(tex) = query_surface_texture_name(start, end) {
+        classify_texture(&tex)
+    } else {
+        SurfaceMaterial::Concrete
+    }
 }
 
 static LAST_UPDATE_TIME: Mutex<f32> = Mutex::new(0.0);
 
-pub unsafe fn update_room_acoustics(player_pos: [f32; 3]) {
+pub fn update_room_acoustics(player_pos: [f32; 3]) {
     if HRTF_ACOUSTICS.value_or(1.0) == 0.0 {
         return;
     }
@@ -320,13 +349,24 @@ pub unsafe fn update_room_acoustics(player_pos: [f32; 3]) {
             ray_distances[i] = dist;
 
             let hit = tr.fraction < 0.98;
-            let material = if hit {
+            let is_sky_tex = if hit {
+                if let Some(tex) = query_surface_texture_name(ray_start, tr.endpos) {
+                    let tex_lower = tex.to_lowercase();
+                    tex_lower.contains("sky") || tex_lower.starts_with("sky")
+                } else {
+                    false
+                }
+            } else {
+                true
+            };
+
+            let material = if hit && !is_sky_tex {
                 query_surface_material(ray_start, tr.endpos)
             } else {
                 SurfaceMaterial::Concrete
             };
 
-            if hit {
+            if hit && !is_sky_tex {
                 total_hits += 1;
                 accumulated_damping += material.base_damping();
                 match material {
@@ -340,17 +380,17 @@ pub unsafe fn update_room_acoustics(player_pos: [f32; 3]) {
                 start: ray_start,
                 end: end_pos,
                 hit_pos: tr.endpos,
-                hit,
+                hit: hit && !is_sky_tex,
                 label,
                 spawn_time: now,
                 material,
             });
 
-            if i < 8 && dist < 320.0 && hit {
+            if i < 8 && dist < 320.0 && hit && !is_sky_tex {
                 close_walls_count += 1;
             }
 
-            if (i == 8 || (10..=13).contains(&i)) && (!hit || dist > 550.0) {
+            if (i == 8 || (10..=13).contains(&i)) && (!hit || is_sky_tex || dist > 450.0) {
                 upper_sky_rays += 1;
             }
         }
@@ -456,7 +496,7 @@ pub unsafe fn update_room_acoustics(player_pos: [f32; 3]) {
         && max_span < 750.0
         && longitudinal_continuity >= 0.4;
 
-    let is_indoor = !is_open_sky && ceiling_dist < 450.0 && close_walls_count >= 2;
+    let is_indoor = !is_open_sky && (ceiling_dist < 450.0 && close_walls_count >= 3);
 
     let (target_room_type, mut target_t60, base_damping, mut target_mix, enclosure_val) =
         if is_tunnel {
@@ -535,11 +575,15 @@ pub unsafe fn update_room_acoustics(player_pos: [f32; 3]) {
             deb.2 = engine_room_id;
 
             if HRTF_ACOUSTICS.value_or(1.0) == 0.0 {
-                let cvar_set_ptr = crate::engine::cdll_int::G_ENGFUNCS.Cvar_SetValue;
-                if !cvar_set_ptr.is_null() {
-                    let cvar_set: unsafe extern "C" fn(*const c_char, f32) =
-                        std::mem::transmute(cvar_set_ptr);
-                    cvar_set(c"room_type".as_ptr(), engine_room_id);
+                if let Ok(cvar_name) = CString::new("room_type") {
+                    unsafe {
+                        let cvar_set_ptr = crate::engine::cdll_int::G_ENGFUNCS.Cvar_SetValue;
+                        if !cvar_set_ptr.is_null() {
+                            let cvar_set: unsafe extern "C" fn(*const c_char, f32) =
+                                std::mem::transmute(cvar_set_ptr);
+                            cvar_set(cvar_name.as_ptr(), engine_room_id);
+                        }
+                    }
                 }
             }
         }
@@ -550,7 +594,7 @@ pub fn get_current_acoustics() -> AcousticEnvironment {
     CURRENT_ENVIRONMENT.lock().map(|e| *e).unwrap_or_default()
 }
 
-unsafe fn find_diffraction_corner(listener: [f32; 3], sound: [f32; 3]) -> Option<([f32; 3], f32)> {
+fn find_diffraction_corner(listener: [f32; 3], sound: [f32; 3]) -> Option<([f32; 3], f32)> {
     let dx = sound[0] - listener[0];
     let dy = sound[1] - listener[1];
     let dist_xy = (dx * dx + dy * dy).sqrt();
@@ -610,9 +654,9 @@ static OCCLUSION_CACHE: Mutex<Vec<OcclusionCacheEntry>> = Mutex::new(Vec::new())
 
 fn quantize_pos(pos: [f32; 3]) -> (i32, i32, i32) {
     (
-        (pos[0] / 4.0).round() as i32,
-        (pos[1] / 4.0).round() as i32,
-        (pos[2] / 4.0).round() as i32,
+        (pos[0] / 16.0).round() as i32,
+        (pos[1] / 16.0).round() as i32,
+        (pos[2] / 16.0).round() as i32,
     )
 }
 
@@ -622,7 +666,7 @@ fn cache_key(sound_origin: [f32; 3], listener_pos: [f32; 3]) -> (i32, i32, i32, 
     (sx, sy, sz, lx, ly, lz)
 }
 
-pub unsafe fn evaluate_sound_propagation(
+pub fn evaluate_sound_propagation(
     sound_origin: [f32; 3],
     listener_pos: [f32; 3],
 ) -> SoundPropagation {
@@ -681,33 +725,48 @@ pub unsafe fn evaluate_sound_propagation(
     result
 }
 
-unsafe fn compute_sound_propagation_uncached(
+fn compute_sound_propagation_uncached(
     sound_origin: [f32; 3],
     listener_pos: [f32; 3],
 ) -> SoundPropagation {
     let start_pos = listener_pos;
+    // Lift sound_origin slightly (by 6 units) if resting on floor to avoid false ground collision
+    let target_lifted = [sound_origin[0], sound_origin[1], sound_origin[2] + 6.0];
 
-    let direct_tr = trace_world_ray(start_pos, sound_origin);
+    let direct_tr = trace_world_ray(start_pos, target_lifted);
 
     let is_direct_clear = if let Some(tr) = direct_tr {
-        if tr.fraction >= 0.97 {
+        if tr.fraction >= 0.96 {
             true
         } else {
-            let dx = sound_origin[0] - tr.endpos[0];
-            let dy = sound_origin[1] - tr.endpos[1];
-            let dz = sound_origin[2] - tr.endpos[2];
+            let dx = target_lifted[0] - tr.endpos[0];
+            let dy = target_lifted[1] - tr.endpos[1];
+            let dz = target_lifted[2] - tr.endpos[2];
             let dist_to_target = (dx * dx + dy * dy + dz * dz).sqrt();
-            dist_to_target <= 28.0
+            // Up to 48 units distance to wall hit is treated as clear LOS (shallow embed / standing near wall)
+            dist_to_target <= 48.0
         }
     } else {
         true
     };
 
     let alt_clear = if !is_direct_clear {
-        let target_up = [sound_origin[0], sound_origin[1], sound_origin[2] + 40.0];
-        trace_world_ray(start_pos, target_up)
-            .map(|tr| tr.fraction >= 0.96)
-            .unwrap_or(false)
+        let offsets = [
+            [0.0, 0.0, 25.0],
+            [0.0, 0.0, 45.0],
+            [15.0, 15.0, 10.0],
+            [-15.0, -15.0, 10.0],
+        ];
+        offsets.iter().any(|off| {
+            let target_off = [
+                sound_origin[0] + off[0],
+                sound_origin[1] + off[1],
+                sound_origin[2] + off[2],
+            ];
+            trace_world_ray(start_pos, target_off)
+                .map(|tr| tr.fraction >= 0.94)
+                .unwrap_or(false)
+        })
     } else {
         true
     };
@@ -792,15 +851,32 @@ unsafe fn compute_sound_propagation_uncached(
 
     let is_source_in_cave = source_has_low_ceiling && has_enclosing_pair;
 
+    let (thickness, material) = compute_wall_thickness(sound_origin, listener_pos);
+    let (mat_damping, max_thick) = match material {
+        SurfaceMaterial::Wood => (0.35, 60.0),
+        SurfaceMaterial::Metal => (0.75, 40.0),
+        SurfaceMaterial::Concrete => (0.85, 120.0),
+        SurfaceMaterial::Glass => (0.15, 20.0),
+        _ => (0.60, 80.0),
+    };
+
+    let thick_factor = (thickness / max_thick).clamp(0.0, 1.0);
+    let wall_occlusion = (thick_factor * mat_damping).clamp(0.0, 0.95);
+    let wall_vol_factor = (1.0 - wall_occlusion * 0.70).clamp(0.15, 1.0);
+
     let (mut occlusion, mut volume_factor) = if is_diffracted {
         let bend_penalty = (diffraction_angle_deg / 180.0).clamp(0.0, 1.0) * 0.40;
-        (0.35 + bend_penalty, 0.70 - bend_penalty * 0.3)
+        let base_occ = 0.35 + bend_penalty;
+        (
+            base_occ.max(wall_occlusion * 0.7),
+            (0.70 - bend_penalty * 0.3).min(wall_vol_factor),
+        )
     } else if blocked_rays >= 4 || (blocked_rays >= 3 && is_source_in_cave) {
-        (0.85, 0.35)
+        (0.85_f32.max(wall_occlusion), 0.35_f32.min(wall_vol_factor))
     } else if is_source_in_cave {
-        (0.75, 0.45)
+        (0.75_f32.max(wall_occlusion), 0.45_f32.min(wall_vol_factor))
     } else {
-        (0.60, 0.55)
+        (0.60_f32.max(wall_occlusion), 0.55_f32.min(wall_vol_factor))
     };
 
     let scale = HRTF_OCCLUSION.value_or(1.0);

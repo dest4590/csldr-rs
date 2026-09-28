@@ -1,14 +1,14 @@
-use crate::engine::acoustics::{
+use crate::audio::acoustics::{
     get_current_acoustics, trace_world_ray, RoomType, LAST_ACOUSTIC_RAYS,
 };
-use crate::engine::acoustics_debug::ACTIVE_SOUND_NODES;
+use crate::audio::debug::ACTIVE_SOUND_NODES;
+use crate::audio::hrtf::NATIVE_HRTF_ENGINE;
 use crate::engine::cdll_int::CLIENT_TIME;
-use crate::engine::native_hrtf::NATIVE_HRTF_ENGINE;
-use crate::engine::sound_hook::get_listener_state;
+use crate::hooks::sound::get_listener_state;
 use crate::render::draw2d::*;
 use crate::render::gl::*;
 use crate::render::studiorenderer::CAN_OPENGL;
-use crate::utils::cvars::{HRTF_DEBUG, HRTF_DEBUG_RAYS};
+use crate::utils::cvars::HRTF_DEBUG;
 
 unsafe fn find_debug_bend_path(listener: [f32; 3], sound: [f32; 3]) -> Option<([f32; 3], f32)> {
     let dx = sound[0] - listener[0];
@@ -57,9 +57,8 @@ unsafe fn find_debug_bend_path(listener: [f32; 3], sound: [f32; 3]) -> Option<([
 }
 
 pub unsafe fn draw_acoustic_rays_3d() {
-    let debug_rays_enabled = HRTF_DEBUG_RAYS.value() != 0.0
-        || HRTF_DEBUG.value() != 0.0
-        || crate::render::camera::is_freecam_active();
+    let debug_rays_enabled =
+        HRTF_DEBUG.value() != 0.0 || crate::render::camera::is_freecam_active();
 
     if !debug_rays_enabled {
         return;
@@ -79,16 +78,16 @@ pub unsafe fn draw_acoustic_rays_3d() {
 
             if ray.hit {
                 match ray.material {
-                    crate::engine::acoustics::SurfaceMaterial::Metal => {
+                    crate::audio::acoustics::SurfaceMaterial::Metal => {
                         gl_color4f(0.2, 0.9, 1.0, 0.70)
                     }
-                    crate::engine::acoustics::SurfaceMaterial::Wood => {
+                    crate::audio::acoustics::SurfaceMaterial::Wood => {
                         gl_color4f(0.9, 0.55, 0.2, 0.70)
                     }
-                    crate::engine::acoustics::SurfaceMaterial::DirtSand => {
+                    crate::audio::acoustics::SurfaceMaterial::DirtSand => {
                         gl_color4f(0.6, 0.8, 0.3, 0.70)
                     }
-                    crate::engine::acoustics::SurfaceMaterial::Glass => {
+                    crate::audio::acoustics::SurfaceMaterial::Glass => {
                         gl_color4f(0.9, 0.9, 1.0, 0.80)
                     }
                     _ => gl_color4f(1.0, 0.45, 0.15, 0.70),
@@ -224,8 +223,7 @@ pub unsafe fn draw_acoustics_gui() {
     }
 
     let freecam_active = crate::render::camera::is_freecam_active();
-    let debug_rays_enabled =
-        HRTF_DEBUG_RAYS.value() != 0.0 || HRTF_DEBUG.value() != 0.0 || freecam_active;
+    let debug_rays_enabled = HRTF_DEBUG.value() != 0.0 || freecam_active;
     let debug_gui_enabled = HRTF_DEBUG.value() != 0.0 || freecam_active;
 
     if !debug_gui_enabled && !debug_rays_enabled {
@@ -250,12 +248,10 @@ pub unsafe fn draw_acoustics_gui() {
                     if ray.hit {
                         let text = format!("{:.0}u [{}]", dist, ray.material.tag());
                         let (r, g, b) = match ray.material {
-                            crate::engine::acoustics::SurfaceMaterial::Metal => (0.3, 0.9, 1.0),
-                            crate::engine::acoustics::SurfaceMaterial::Wood => (1.0, 0.65, 0.25),
-                            crate::engine::acoustics::SurfaceMaterial::DirtSand => {
-                                (0.65, 0.9, 0.35)
-                            }
-                            crate::engine::acoustics::SurfaceMaterial::Glass => (0.9, 0.95, 1.0),
+                            crate::audio::acoustics::SurfaceMaterial::Metal => (0.3, 0.9, 1.0),
+                            crate::audio::acoustics::SurfaceMaterial::Wood => (1.0, 0.65, 0.25),
+                            crate::audio::acoustics::SurfaceMaterial::DirtSand => (0.65, 0.9, 0.35),
+                            crate::audio::acoustics::SurfaceMaterial::Glass => (0.9, 0.95, 1.0),
                             _ => (1.0, 0.50, 0.15),
                         };
                         draw_rect_2d(hit_scr[0] - 2.5, hit_scr[1] - 2.5, 5.0, 5.0, r, g, b, 0.95);
@@ -432,37 +428,6 @@ pub unsafe fn draw_acoustics_gui() {
         0.90,
     );
 
-    let rear_status = if spatial.rear_shadow > 0.05 {
-        format!("ACTIVE ({:.1}dB)", spatial.rear_shadow * -2.5)
-    } else {
-        "CLEAR (0dB)".to_string()
-    };
-    draw_text_2d(
-        (info_x + 8.0) as i32,
-        (info_y + 54.0) as i32,
-        &format!("REAR PINNA : {}", rear_status),
-        1.0,
-        0.75,
-        0.25,
-    );
-
-    let elev_deg = spatial.elevation.to_degrees();
-    let elev_status = if elev_deg > 8.0 {
-        format!("+Airy (+{:.0} deg)", elev_deg)
-    } else if elev_deg < -8.0 {
-        format!("-Notch 7.2k ({:.0} deg)", elev_deg)
-    } else {
-        format!("{:.0} deg", elev_deg)
-    };
-    draw_text_2d(
-        (info_x + 8.0) as i32,
-        (info_y + 66.0) as i32,
-        &format!("ELEVATION  : {}", elev_status),
-        0.35,
-        0.90,
-        0.45,
-    );
-
     let diff_status = if spatial.is_diffracted {
         format!("BENT ({:.0} deg)", spatial.diffraction_angle_deg)
     } else {
@@ -470,7 +435,7 @@ pub unsafe fn draw_acoustics_gui() {
     };
     draw_text_2d(
         (info_x + 8.0) as i32,
-        (info_y + 78.0) as i32,
+        (info_y + 54.0) as i32,
         &format!("DIFFRACT   : {}", diff_status),
         0.90,
         0.40,
@@ -547,9 +512,9 @@ pub unsafe fn draw_acoustics_gui() {
             let pt_y = center_y - (local_y * RADAR_SCALE).clamp(-46.0, 46.0);
 
             let (r, g, b) = match ray.material {
-                crate::engine::acoustics::SurfaceMaterial::Metal => (0.3, 0.9, 1.0),
-                crate::engine::acoustics::SurfaceMaterial::Wood => (1.0, 0.6, 0.2),
-                crate::engine::acoustics::SurfaceMaterial::DirtSand => (0.6, 0.85, 0.3),
+                crate::audio::acoustics::SurfaceMaterial::Metal => (0.3, 0.9, 1.0),
+                crate::audio::acoustics::SurfaceMaterial::Wood => (1.0, 0.6, 0.2),
+                crate::audio::acoustics::SurfaceMaterial::DirtSand => (0.6, 0.85, 0.3),
                 _ => (1.0, 0.45, 0.2),
             };
             draw_rect_2d(pt_x - 1.0, pt_y - 1.0, 2.0, 2.0, r, g, b, 0.85);

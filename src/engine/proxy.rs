@@ -23,7 +23,7 @@ pub unsafe fn proxy_init() {
         return;
     }
 
-    let mut path_buf = [0i8; 512];
+    let mut path_buf = [0 as std::os::raw::c_char; 512];
     let len = plat_current_module_name(path_buf.as_mut_ptr(), 512);
     if len == 0 {
         plat_error("Could not get current module name\n");
@@ -112,7 +112,7 @@ pub unsafe fn proxy_init() {
     load_sym!(CL_FUNCS.pGetPlayerTeam, "HUD_GetPlayerTeam");
     load_sym!(CL_FUNCS.pClientFactory, "ClientFactory");
 
-    crate::engine::audio_hook::install_audio_hooks();
+    crate::hooks::alsa_sdl::install_audio_hooks();
     crate::render::render::render_load();
 }
 

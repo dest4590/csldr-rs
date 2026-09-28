@@ -170,12 +170,11 @@ cvar_table! {
     register("hrtf_enable",              "1",     HRTF_ENABLE);
     register("hrtf_volume",              "1.0",   HRTF_VOLUME);
     register("hrtf_debug",               "0",     HRTF_DEBUG);
-    register("hrtf_debug_rays",          "0",     HRTF_DEBUG_RAYS);
     register("hrtf_acoustics",           "1",     HRTF_ACOUSTICS);
     register("hrtf_reverb_scale",        "1.0",   HRTF_REVERB_SCALE);
     register("hrtf_occlusion",           "1",     HRTF_OCCLUSION);
-    register("hrtf_freecam",             "0",     HRTF_FREECAM);
-    register("hrtf_freecam_speed",       "500",   HRTF_FREECAM_SPEED);
+    register("freecam",                  "0",     HRTF_FREECAM);
+    register("freecam_speed",            "500",   HRTF_FREECAM_SPEED);
     register("movement_gui_enable",      "1",     MOVEMENT_GUI_ENABLE);
     register("movement_gui_keys",        "0",     MOVEMENT_GUI_KEYS);
     register("movement_gui_speed",       "1",     MOVEMENT_GUI_SPEED);

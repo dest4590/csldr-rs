@@ -1,7 +1,6 @@
 use crate::engine::sdk::ClEngineFuncs;
 use crate::utils::cvars::{HRTF_ACOUSTICS, HRTF_ENABLE, HRTF_VOLUME};
-use std::ffi::{c_char, c_void, CStr};
-use std::os::raw::c_int;
+use std::ffi::{c_char, c_int, c_void, CStr};
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Mutex;
 
@@ -375,7 +374,7 @@ pub unsafe fn hook_player_move(ppmove: *mut c_void) {
     let pm = &mut *(ppmove as *mut PlayermoveT);
 
     if !pm.PM_TraceTexture.is_null() {
-        crate::engine::acoustics::G_PM_TRACE_TEXTURE.store(pm.PM_TraceTexture, Ordering::Relaxed);
+        crate::audio::acoustics::G_PM_TRACE_TEXTURE.store(pm.PM_TraceTexture, Ordering::Relaxed);
     }
 
     if let Ok(mut origins) = PLAYER_ENT_ORIGINS.lock() {
@@ -405,7 +404,7 @@ pub unsafe fn hook_player_move(ppmove: *mut c_void) {
             pm.origin[2] + pm.view_ofs[2],
         ];
         update_listener_state(ear_origin, pm.angles, pm.forward, pm.right, pm.up);
-        crate::engine::acoustics::update_room_acoustics(pm.origin);
+        crate::audio::acoustics::update_room_acoustics(pm.origin);
     }
 }
 
@@ -502,7 +501,7 @@ unsafe fn process_named_sound_ptr(
     process_hrtf_sound(&name, volume, sound_origin)
 }
 
-fn origin_from_ptr(origin: *const f32) -> Option<[f32; 3]> {
+pub fn origin_from_ptr(origin: *const f32) -> Option<[f32; 3]> {
     if origin.is_null() {
         None
     } else {
@@ -538,98 +537,51 @@ pub fn resolve_sound_world_origin(origin: *const f32, entnum: c_int) -> Option<[
     }
 }
 
-pub unsafe fn is_local_entity_or_near(entnum: c_int, orig_raw: Option<[f32; 3]>) -> bool {
-    let local_idx = if let Some(get_local) = crate::engine::cdll_int::G_ENGFUNCS.GetLocalPlayer {
-        let local_ptr = get_local() as *const crate::engine::sdk::ClEntity;
-        if !local_ptr.is_null() {
-            (*local_ptr).index
+pub fn is_local_entity_or_near(entnum: c_int, orig_raw: Option<[f32; 3]>) -> bool {
+    let local_idx =
+        if let Some(get_local) = unsafe { crate::engine::cdll_int::G_ENGFUNCS.GetLocalPlayer } {
+            let local_ptr = unsafe { get_local() as *const crate::engine::sdk::ClEntity };
+            if (local_ptr as usize) > 0x10000 {
+                unsafe { (*local_ptr).index }
+            } else {
+                1
+            }
         } else {
             1
+        };
+
+    let vm_idx = if let Some(get_vm) = unsafe { crate::engine::cdll_int::G_ENGFUNCS.GetViewModel } {
+        let vm_ptr = unsafe { get_vm() as *const crate::engine::sdk::ClEntity };
+        if (vm_ptr as usize) > 0x10000 {
+            unsafe { (*vm_ptr).index }
+        } else {
+            0
         }
     } else {
-        1
+        0
     };
 
-    if entnum == local_idx || entnum == 0 || entnum == -1 {
+    // 0 = local / client-only entity in GoldSrc, local_idx = local player, vm_idx = viewmodel
+    if entnum == 0 || entnum == local_idx || (vm_idx != 0 && entnum == vm_idx) {
         return true;
     }
 
-    if entnum > 0 && entnum != local_idx && entnum <= 32 {
-        return false;
-    }
-
-    if let Ok(my_orig) = LAST_PMMOVE_ORIGIN.lock() {
-        if *my_orig != [0.0, 0.0, 0.0] {
-            if let Some(p) = orig_raw {
-                let dist_sq = (p[0] - my_orig[0]).powi(2)
-                    + (p[1] - my_orig[1]).powi(2)
-                    + (p[2] - my_orig[2]).powi(2);
-                if dist_sq < 22500.0 {
-                    return true;
-                }
-            }
+    // Check if origin is coincident with player eyes/origin or within close body radius (< 64 units)
+    if let Some(orig) = orig_raw {
+        let listener = get_listener_state();
+        let dx = orig[0] - listener.origin[0];
+        let dy = orig[1] - listener.origin[1];
+        let dz = orig[2] - listener.origin[2];
+        if (dx * dx + dy * dy + dz * dz) < 64.0 * 64.0 {
+            return true;
         }
     }
 
     false
 }
 
-pub fn is_casing_sound(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    lower.contains("shell")
-        || lower.contains("sshell")
-        || lower.contains("debris")
-        || lower.contains("pl_shell")
-}
-
-pub fn is_explosive_sound(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    lower.contains("hegrenade")
-        || lower.contains("explode")
-        || lower.contains("explosion")
-        || lower.contains("flashbang")
-        || lower.contains("sg_explode")
-        || lower.contains("c4_explode")
-        || lower.contains("grenade")
-        || lower.contains("createsmoke")
-        || lower.contains("createexplosion")
-}
-
-pub fn is_reload_sound(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    lower.contains("reload")
-        || lower.contains("clipin")
-        || lower.contains("clipout")
-        || lower.contains("boltpull")
-        || lower.contains("boltslap")
-        || lower.contains("clip")
-        || lower.contains("slide")
-        || lower.contains("insert")
-        || lower.contains("draw")
-}
-
-pub fn sound_threat_weight(name: &str) -> f32 {
-    let lower = name.to_lowercase();
-    if is_explosive_sound(&lower) {
-        5.0
-    } else if lower.contains("weapons/")
-        && (lower.contains("-1.wav")
-            || lower.contains("-2.wav")
-            || lower.contains("shoot")
-            || lower.contains("fire"))
-    {
-        4.0
-    } else if is_reload_sound(&lower) {
-        3.5
-    } else if lower.contains("knife") || lower.contains("step") {
-        2.5
-    } else if lower.contains("door") || lower.contains("button") || lower.contains("ric") {
-        1.5
-    } else if is_casing_sound(&lower) {
-        0.15
-    } else {
-        1.0
-    }
+pub fn sound_threat_weight(_name: &str) -> f32 {
+    1.0
 }
 
 pub fn process_hrtf_sound(sound_name: &str, volume: f32, sound_origin: Option<[f32; 3]>) -> f32 {
@@ -641,40 +593,28 @@ pub fn process_hrtf_sound(sound_name: &str, volume: f32, sound_origin: Option<[f
     if cleaned_name.is_empty() {
         return volume;
     }
+    let lower = cleaned_name.to_lowercase();
 
     let sound_origin = sound_origin.filter(|pos| *pos != [0.0, 0.0, 0.0]);
-    let acoustics = crate::engine::acoustics::get_current_acoustics();
-    let is_explosion = is_explosive_sound(cleaned_name);
-    let is_reload = is_reload_sound(cleaned_name);
+    let acoustics = crate::audio::acoustics::get_current_acoustics();
     let mut final_volume = volume;
 
     if let Some(pos) = sound_origin {
         let (_local_vec, dist) = compute_spatial_vector(pos);
         let listener = get_listener_state();
-        let prop =
-            unsafe { crate::engine::acoustics::evaluate_sound_propagation(pos, listener.origin) };
+        let is_shell =
+            lower.contains("shell") || lower.contains("pl_shell") || lower.contains("sshell");
+        let lift_z = if is_shell { 14.0 } else { 4.0 };
+        let pos_lifted = [pos[0], pos[1], pos[2] + lift_z];
+        let prop = crate::audio::acoustics::evaluate_sound_propagation(pos_lifted, listener.origin);
         let acoustics_enabled = HRTF_ACOUSTICS.enabled();
 
-        if is_casing_sound(cleaned_name) {
-            const CASING_MAX_DIST: f32 = 260.0;
-            if dist > CASING_MAX_DIST {
-                return 0.0;
-            }
-            if prop.occlusion > 0.15
-                && (!prop.is_diffracted || dist > 120.0 || prop.diffraction_angle_deg > 45.0)
-            {
-                return 0.0;
-            }
-            let dist_fade = (1.0 - (dist / CASING_MAX_DIST)).clamp(0.0, 1.0).powi(2);
-            let casing_vol = volume * 0.35 * dist_fade;
-            return if casing_vol < 0.01 { 0.0 } else { casing_vol };
-        }
-
-        let (effective_volume_factor, effective_occlusion) = if is_explosion {
-            (prop.volume_factor.max(0.75), prop.occlusion.min(0.30))
+        let effective_volume_factor = if is_shell {
+            1.0
         } else {
-            (prop.volume_factor.max(0.55), prop.occlusion)
+            prop.volume_factor.max(0.55)
         };
+        let effective_occlusion = if is_shell { 0.0 } else { prop.occlusion };
 
         let occl_factor = if effective_occlusion > 0.1 {
             (1.0 - effective_occlusion * 0.40).clamp(0.40, 1.0)
@@ -693,27 +633,36 @@ pub fn process_hrtf_sound(sound_name: &str, volume: f32, sound_origin: Option<[f
 
         final_volume = final_volume.clamp(0.02, 2.50);
 
-        if is_reload {
-            crate::con_println!(
-                "[TRACK RELOAD 3D] '{}' pos={:?} dist={:.1} occl={:.2} vol={:.2}",
-                cleaned_name,
-                pos,
-                dist,
-                effective_occlusion,
-                final_volume
-            );
+        let _now = crate::engine::cdll_int::CLIENT_TIME
+            .lock()
+            .map(|t| *t)
+            .unwrap_or(0.0);
+        // Only trigger tinnitus for standard CS 1.6 / CZ HE grenades with direct line of sight
+        // Exclude custom server plugins, zombies, custom items unless they are vanilla weapons/
+        if effective_occlusion < 0.25 {
+            let is_vanilla_he = (lower.starts_with("weapons/hegrenade-")
+                || lower.starts_with("weapons/explode"))
+                && !lower.contains("bounce");
+
+            if is_vanilla_he && dist < 450.0 {
+                let intensity = (1.0 - dist / 450.0).clamp(0.2, 1.0);
+                crate::audio::hrtf::trigger_grenade_concussion(intensity, 7.5 * intensity);
+            }
         }
 
-        crate::engine::acoustics_debug::track_3d_sound(
+        crate::con_println!(
+            "[CSLDR-3D] Tracked 3D sound: '{}' at {:?}, vol: {:.2}, occluded: {}",
             cleaned_name,
             pos,
             final_volume,
-            effective_occlusion > 0.1,
+            effective_occlusion > 0.40
         );
-    } else if is_reload {
-        crate::con_println!(
-            "[DROP RELOAD 3D] Sound '{}' NOT added to 3D nodes because sound_origin is NONE!",
-            cleaned_name
+
+        crate::audio::debug::track_3d_sound(
+            cleaned_name,
+            pos,
+            final_volume,
+            effective_occlusion > 0.40,
         );
     }
 
@@ -724,7 +673,7 @@ pub unsafe fn init_sound_hooks(penginefuncs: *mut ClEngineFuncs) {
     if penginefuncs.is_null() {
         return;
     }
-    crate::engine::engine_sound_hook::install_engine_sound_hooks();
+    crate::hooks::engine_sound::install_engine_sound_hooks();
 }
 
 pub unsafe extern "C" fn hk_ev_play_sound(
@@ -776,6 +725,35 @@ pub unsafe fn check_and_hook_event_api() {
             ORIG_EV_PLAY_SOUND.store(event_api.EV_PlaySound, Ordering::Relaxed);
             event_api.EV_PlaySound = hk_ev_play_sound as *mut _;
         }
+
+        if let Some(orig_fn) = event_api.EV_PlayerTrace {
+            if orig_fn as *const () != hk_ev_player_trace as *const () {
+                ORIG_EV_PLAYER_TRACE.store(orig_fn as *mut c_void, Ordering::Relaxed);
+                event_api.EV_PlayerTrace = Some(hk_ev_player_trace);
+            }
+        }
+    }
+}
+
+ffi_ptr!(pub static ORIG_EV_PLAYER_TRACE);
+
+pub unsafe extern "C" fn hk_ev_player_trace(
+    pe_start: *const f32,
+    pe_end: *const f32,
+    trace_flags: c_int,
+    ignore_pe: c_int,
+    tr: *mut crate::engine::sdk::PMTrace,
+) {
+    let ptr = ORIG_EV_PLAYER_TRACE.load(Ordering::Relaxed);
+    if !ptr.is_null() {
+        let orig: unsafe extern "C" fn(
+            *const f32,
+            *const f32,
+            c_int,
+            c_int,
+            *mut crate::engine::sdk::PMTrace,
+        ) = std::mem::transmute(ptr);
+        orig(pe_start, pe_end, trace_flags, ignore_pe, tr);
     }
 }
 
@@ -820,20 +798,6 @@ pub unsafe fn hook_studio_event(event: *const c_void, entity: *const c_void) {
     } else {
         None
     };
-
-    if cleaned.contains("reload") || cleaned.contains("clip") || cleaned.contains("bolt") {
-        crate::con_println!(
-            "[DEBUG STUDIO_EVENT] ev={} sound='{}' ent_idx={} origin={:?}",
-            ev.event,
-            cleaned,
-            if !entity.is_null() {
-                (*(entity as *const crate::engine::sdk::ClEntity)).index
-            } else {
-                -1
-            },
-            origin
-        );
-    }
 
     let volume = if HRTF_ENABLE.value() != 0.0 {
         scaled_sound_volume(1.0)
@@ -905,9 +869,4 @@ pub unsafe extern "C" fn hk_temp_ent_sound(ptemp: *mut TempEntityT, damp: f32) {
         let orig: FnTempEntSoundCallback = std::mem::transmute(ptr);
         orig(ptemp, effective_damp);
     }
-}
-
-pub fn trigger_pain_sound(name: &str, volume: f32, _origin: [f32; 3]) {
-    let cleaned = clean_sound_name(name);
-    process_hrtf_sound(cleaned, volume, None);
 }

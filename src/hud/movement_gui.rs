@@ -1,5 +1,4 @@
-use std::ffi::CString;
-use std::os::raw::c_char;
+use std::ffi::{c_char, CString};
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 
@@ -119,15 +118,6 @@ pub static MOVEMENT_STATE: Mutex<MovementState> = Mutex::new(MovementState {
     speed_history: Vec::new(),
     last_buttons: 0,
 });
-
-macro_rules! call_engine {
-    ($func:expr, $sig:ty $(, $arg:expr)*) => {
-        if !$func.is_null() {
-            let f: $sig = std::mem::transmute($func);
-            f($($arg),*);
-        }
-    };
-}
 
 fn catmull_rom(p0: f32, p1: f32, p2: f32, p3: f32, t: f32) -> f32 {
     let t2 = t * t;
@@ -264,12 +254,11 @@ pub unsafe fn update_movement_physics(params: &RefParams) {
 
             if stats.distance >= 240.0 && MOVEMENT_GUI_ENABLE.value() != 0.0 {
                 if let Ok(sound_path) = CString::new("buttons/bell1.wav") {
-                    call_engine!(
-                        G_ENGFUNCS.pfnPlaySoundByName,
-                        unsafe extern "C" fn(*const c_char, f32),
-                        sound_path.as_ptr(),
-                        1.0
-                    );
+                    if !G_ENGFUNCS.pfnPlaySoundByName.is_null() {
+                        let pfn: unsafe extern "C" fn(*const c_char, f32) =
+                            std::mem::transmute(G_ENGFUNCS.pfnPlaySoundByName);
+                        pfn(sound_path.as_ptr(), 1.0);
+                    }
                 }
             }
 

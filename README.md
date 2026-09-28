@@ -4,8 +4,7 @@ fork of https://github.com/mikkokko/csldr/ but with new features (just rust rewr
 
 csldr is a custom client library (`client.dll` / `client_i386.so`) implementation for counter-strike 1.6 and half-life (goldsrc engine) written in rust.
 
-> [!NOTE]
-> Only for Linux
+Supports **Linux** (`i686-unknown-linux-gnu`) and **Windows** (`i686-pc-windows-gnu` / `i686-pc-windows-msvc`).
 
 ---
 
@@ -17,8 +16,8 @@ csldr is a custom client library (`client.dll` / `client_i386.so`) implementatio
   - debug overlay for acoustic state and 3d sound ray visualization in-game.
   - freecam spectator mode for 3d acoustic inspection (`hrtf_freecam`).
 
-check the youtube videos for more demonstrations:
-https://www.youtube.com/watch?v=2PTGzt5GvBQ
+check the youtube videos for more demonstrations:  
+https://www.youtube.com/watch?v=2PTGzt5GvBQ  
 https://www.youtube.com/watch?v=4bgmYFFC76I
 
 - **viewmodel manipulation**: configurable viewmodel fov, 3d offsets, origin offsets, rotation (pitch/yaw/roll), sway, lag, bobbing styles, and shift animations.

@@ -1,4 +1,4 @@
-use crate::utils::cvars::{HRTF_FREECAM, HRTF_FREECAM_SPEED};
+use crate::utils::cvars::HRTF_FREECAM_SPEED;
 use crate::utils::maths::{angle_lerp, angle_vectors, Vec3};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -19,7 +19,7 @@ pub static FREECAM_STATE: Mutex<FreecamState> = Mutex::new(FreecamState {
 });
 
 pub fn is_freecam_active() -> bool {
-    FREECAM_ENABLED.load(Ordering::Relaxed) || HRTF_FREECAM.value() != 0.0
+    FREECAM_ENABLED.load(Ordering::Relaxed)
 }
 
 pub fn toggle_freecam() -> bool {

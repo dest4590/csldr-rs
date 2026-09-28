@@ -440,7 +440,7 @@ pub unsafe fn hk_calc_refdef(pparams: *mut RefParams) {
         }
     }
 
-    crate::engine::sound_hook::update_listener_state(
+    crate::hooks::sound::update_listener_state(
         params.vieworg,
         params.viewangles,
         params.forward,
@@ -458,7 +458,7 @@ pub unsafe fn hk_calc_refdef(pparams: *mut RefParams) {
         ]
     };
 
-    crate::engine::acoustics::update_room_acoustics(player_origin);
+    crate::audio::acoustics::update_room_acoustics(player_origin);
 
     crate::hud::movement_gui::update_movement_physics(params);
 

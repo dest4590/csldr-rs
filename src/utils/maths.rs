@@ -15,16 +15,6 @@ pub fn rint(x: f32) -> i32 {
 }
 
 #[inline]
-pub fn degrees(rad: f32) -> f32 {
-    rad * (180.0 / F_PI)
-}
-
-#[inline]
-pub fn radians(deg: f32) -> f32 {
-    deg * (F_PI / 180.0)
-}
-
-#[inline]
 pub fn dot_product(a: &Vec3, b: &Vec3) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
@@ -119,9 +109,9 @@ pub fn angle_vectors(
     side: Option<&mut Vec3>,
     up: Option<&mut Vec3>,
 ) {
-    let yaw = radians(angles[1]);
-    let pitch = radians(angles[0]);
-    let roll = radians(angles[2]);
+    let yaw = angles[1].to_radians();
+    let pitch = angles[0].to_radians();
+    let roll = angles[2].to_radians();
 
     let cy = yaw.cos();
     let sy = yaw.sin();

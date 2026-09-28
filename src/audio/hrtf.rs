@@ -1,5 +1,5 @@
-use crate::engine::acoustics::AcousticEnvironment;
-use crate::engine::sound_hook::ListenerState;
+use crate::audio::acoustics::AcousticEnvironment;
+use crate::hooks::sound::ListenerState;
 use std::f32::consts::PI;
 use std::sync::Mutex;
 
@@ -9,16 +9,13 @@ const SPEED_OF_SOUND: f32 = 343.0;
 #[derive(Clone, Copy, Debug)]
 pub struct SpatialParams {
     pub azimuth: f32,
-    pub elevation: f32,
     pub distance: f32,
-    pub itd_samples_l: f32,
-    pub itd_samples_r: f32,
     pub gain_l: f32,
     pub gain_r: f32,
+    pub itd_samples_l: f32,
+    pub itd_samples_r: f32,
     pub occlusion: f32,
     pub reverb_send: f32,
-    pub rear_shadow: f32,
-    pub elevation_notch: f32,
     pub is_diffracted: bool,
     pub diffraction_angle_deg: f32,
 }
@@ -27,16 +24,13 @@ impl Default for SpatialParams {
     fn default() -> Self {
         Self {
             azimuth: 0.0,
-            elevation: 0.0,
-            distance: 0.0,
-            itd_samples_l: 0.0,
-            itd_samples_r: 0.0,
+            distance: 1.0,
             gain_l: 1.0,
             gain_r: 1.0,
+            itd_samples_l: 0.0,
+            itd_samples_r: 0.0,
             occlusion: 0.0,
-            reverb_send: 1.0,
-            rear_shadow: 0.0,
-            elevation_notch: 0.0,
+            reverb_send: 0.0,
             is_diffracted: false,
             diffraction_angle_deg: 0.0,
         }
@@ -296,20 +290,57 @@ impl TunnelResonator {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ConcussionState {
+    pub start_time: f32,
+    pub active_until: f32,
+    pub duration: f32,
+    pub intensity: f32,
+}
+
+pub static G_CONCUSSION: Mutex<ConcussionState> = Mutex::new(ConcussionState {
+    start_time: 0.0,
+    active_until: 0.0,
+    duration: 0.0,
+    intensity: 0.0,
+});
+
+pub fn trigger_grenade_concussion(intensity: f32, duration: f32) {
+    let now = crate::engine::cdll_int::CLIENT_TIME
+        .lock()
+        .map(|t| *t)
+        .unwrap_or(0.0);
+    let real_now = if now > 0.0 {
+        now
+    } else {
+        // Fallback if client time is not ticked yet
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f32())
+            .unwrap_or(0.0)
+    };
+    if let Ok(mut c) = G_CONCUSSION.lock() {
+        c.start_time = real_now;
+        c.active_until = real_now + duration;
+        c.duration = duration;
+        c.intensity = intensity.clamp(0.0, 1.0);
+    }
+}
+
 pub struct NativeHrtfEngine {
     pub sample_rate: f32,
     pub lpf: LowPassFilter,
     pub far_ear_lpf: LowPassFilter,
-    pub rear_pinna_lpf: LowPassFilter,
     pub air_lpf: LowPassFilter,
-    pub elevation_filter: ElevationNotchFilter,
+    pub concussion_lpf: LowPassFilter,
     itd_delay_l: DelayLine,
     itd_delay_r: DelayLine,
     reverb_a: FdnReverb,
-    current_room: Option<crate::engine::acoustics::RoomType>,
+    current_room: Option<crate::audio::acoustics::RoomType>,
     pub last_spatial: SpatialParams,
     tunnel_effect: TunnelResonator,
     tunnel_blend: f32,
+    tinnitus_phase: f32,
 }
 
 impl NativeHrtfEngine {
@@ -325,11 +356,11 @@ impl NativeHrtfEngine {
         let mut far_ear_lpf = LowPassFilter::default();
         far_ear_lpf.set_cutoff(20000.0, sample_rate);
 
-        let mut rear_pinna_lpf = LowPassFilter::default();
-        rear_pinna_lpf.set_cutoff(20000.0, sample_rate);
-
         let mut air_lpf = LowPassFilter::default();
         air_lpf.set_cutoff(20000.0, sample_rate);
+
+        let mut concussion_lpf = LowPassFilter::default();
+        concussion_lpf.set_cutoff(20000.0, sample_rate);
 
         let max_itd_samples = ((HEAD_RADIUS / SPEED_OF_SOUND) * 4.0 * sample_rate).ceil() as usize;
 
@@ -337,9 +368,8 @@ impl NativeHrtfEngine {
             sample_rate,
             lpf,
             far_ear_lpf,
-            rear_pinna_lpf,
             air_lpf,
-            elevation_filter: ElevationNotchFilter::default(),
+            concussion_lpf,
             itd_delay_l: DelayLine::new(max_itd_samples),
             itd_delay_r: DelayLine::new(max_itd_samples),
             reverb_a: FdnReverb::new(sample_rate),
@@ -347,6 +377,7 @@ impl NativeHrtfEngine {
             last_spatial: SpatialParams::default(),
             tunnel_effect: TunnelResonator::new(sample_rate),
             tunnel_blend: 0.0,
+            tinnitus_phase: 0.0,
         }
     }
 
@@ -373,13 +404,9 @@ impl NativeHrtfEngine {
         let (dry_l, dry_r) = self.apply_itd(in_l, in_r);
         let (flt_l, flt_r) = self.apply_filters(dry_l, dry_r, azimuth);
 
-        let (elev_l, elev_r) =
-            self.elevation_filter
-                .process(flt_l, flt_r, self.last_spatial.elevation_notch);
-
         let filter_mix = self.postmix_filter_mix();
-        let shaped_l = dry_l + (elev_l - dry_l) * filter_mix;
-        let shaped_r = dry_r + (elev_r - dry_r) * filter_mix;
+        let shaped_l = dry_l + (flt_l - dry_l) * filter_mix;
+        let shaped_r = dry_r + (flt_r - dry_r) * filter_mix;
 
         let (gain_l, gain_r) = self.postmix_gains();
         let direct_l = shaped_l * gain_l;
@@ -388,8 +415,7 @@ impl NativeHrtfEngine {
         let (rev_l, rev_r) =
             self.process_reverb(direct_l, direct_r, mix, self.last_spatial.reverb_send);
 
-        let target_blend = if self.current_room == Some(crate::engine::acoustics::RoomType::Tunnel)
-        {
+        let target_blend = if self.current_room == Some(crate::audio::acoustics::RoomType::Tunnel) {
             (mix / 0.60).clamp(0.0, 1.0) * 0.70
         } else {
             0.0
@@ -400,18 +426,127 @@ impl NativeHrtfEngine {
     }
 
     pub fn process_buffer_interleaved_i16(&mut self, buffer: &mut [i16], mix: f32) {
+        let now = crate::engine::cdll_int::CLIENT_TIME
+            .lock()
+            .map(|t| *t)
+            .unwrap_or(0.0);
+        let real_now = if now > 0.0 {
+            now
+        } else {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs_f32())
+                .unwrap_or(0.0)
+        };
+        let concussion = G_CONCUSSION.lock().map(|c| *c).unwrap_or_default();
+        let is_concussed = real_now < concussion.active_until && concussion.duration > 0.0;
+        let (conc_factor, attack_factor) = if is_concussed {
+            let elapsed = (real_now - concussion.start_time).max(0.0);
+            let raw_attack = (elapsed / 0.60).clamp(0.0, 1.0);
+            let attack = raw_attack * raw_attack * (3.0 - 2.0 * raw_attack);
+
+            let remain = (concussion.active_until - real_now) / concussion.duration;
+            let decay = remain.clamp(0.0, 1.0).powf(1.4) * concussion.intensity;
+            (decay * attack, attack)
+        } else {
+            (0.0, 0.0)
+        };
+
+        if conc_factor > 0.001 {
+            let cutoff = 180.0 + (20000.0 - 180.0) * (1.0 - conc_factor).powi(3);
+            self.concussion_lpf.set_cutoff(cutoff, self.sample_rate);
+        }
+
+        let base_tone = 3600.0;
+        let dt = 1.0 / self.sample_rate;
+
         for chunk in buffer.chunks_exact_mut(2) {
             let in_l = chunk[0] as f32 / 32768.0;
             let in_r = chunk[1] as f32 / 32768.0;
-            let (out_l, out_r) = self.process_sample(in_l, in_r, mix);
+            let (mut out_l, mut out_r) = self.process_sample(in_l, in_r, mix);
+
+            if conc_factor > 0.001 {
+                let (proc_l, proc_r) = self.concussion_lpf.process(out_l, out_r);
+                out_l = proc_l * (1.0 - conc_factor * 0.85);
+                out_r = proc_r * (1.0 - conc_factor * 0.85);
+
+                let primary_tone = self.tinnitus_phase.sin();
+                let sub_harmonic = (self.tinnitus_phase * 0.5).sin() * 0.30;
+                let overtone = (self.tinnitus_phase * 1.5).sin() * 0.15;
+                let combined_tone =
+                    (primary_tone + sub_harmonic + overtone) * conc_factor * attack_factor * 0.14;
+
+                let phase_inc = 2.0 * PI * (base_tone + conc_factor * 200.0) * dt;
+                self.tinnitus_phase = (self.tinnitus_phase + phase_inc) % (2.0 * PI);
+
+                out_l += combined_tone * 0.95;
+                out_r += combined_tone * 1.05;
+            }
+
             chunk[0] = (out_l.clamp(-1.0, 1.0) * 32767.0) as i16;
             chunk[1] = (out_r.clamp(-1.0, 1.0) * 32767.0) as i16;
         }
     }
 
     pub fn process_buffer_interleaved_f32(&mut self, buffer: &mut [f32], mix: f32) {
+        let now = crate::engine::cdll_int::CLIENT_TIME
+            .lock()
+            .map(|t| *t)
+            .unwrap_or(0.0);
+        let real_now = if now > 0.0 {
+            now
+        } else {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs_f32())
+                .unwrap_or(0.0)
+        };
+        let concussion = G_CONCUSSION.lock().map(|c| *c).unwrap_or_default();
+        let is_concussed = real_now < concussion.active_until && concussion.duration > 0.0;
+        let (conc_factor, attack_factor) = if is_concussed {
+            let elapsed = (real_now - concussion.start_time).max(0.0);
+            // Smooth S-curve attack over 600ms so tinnitus doesn't start abruptly
+            let raw_attack = (elapsed / 0.60).clamp(0.0, 1.0);
+            let attack = raw_attack * raw_attack * (3.0 - 2.0 * raw_attack);
+
+            let remain = (concussion.active_until - real_now) / concussion.duration;
+            let decay = remain.clamp(0.0, 1.0).powf(1.4) * concussion.intensity;
+            (decay * attack, attack)
+        } else {
+            (0.0, 0.0)
+        };
+
+        if conc_factor > 0.001 {
+            // Aquarium low-pass down to 180 Hz
+            let cutoff = 180.0 + (20000.0 - 180.0) * (1.0 - conc_factor).powi(3);
+            self.concussion_lpf.set_cutoff(cutoff, self.sample_rate);
+        }
+
+        let base_tone = 3600.0;
+        let dt = 1.0 / self.sample_rate;
+
         for chunk in buffer.chunks_exact_mut(2) {
-            let (out_l, out_r) = self.process_sample(chunk[0], chunk[1], mix);
+            let (mut out_l, mut out_r) = self.process_sample(chunk[0], chunk[1], mix);
+
+            if conc_factor > 0.001 {
+                let (proc_l, proc_r) = self.concussion_lpf.process(out_l, out_r);
+                out_l = proc_l * (1.0 - conc_factor * 0.85);
+                out_r = proc_r * (1.0 - conc_factor * 0.85);
+
+                // Multi-harmonic rich ringing with smooth fade-in
+                let primary_tone = self.tinnitus_phase.sin();
+                let sub_harmonic = (self.tinnitus_phase * 0.5).sin() * 0.30;
+                let overtone = (self.tinnitus_phase * 1.5).sin() * 0.15;
+                let combined_tone =
+                    (primary_tone + sub_harmonic + overtone) * conc_factor * attack_factor * 0.14;
+
+                let phase_inc = 2.0 * PI * (base_tone + conc_factor * 200.0) * dt;
+                self.tinnitus_phase = (self.tinnitus_phase + phase_inc) % (2.0 * PI);
+
+                out_l += combined_tone * 0.95;
+                out_r += combined_tone * 1.05;
+            }
+
             chunk[0] = out_l.clamp(-1.0, 1.0);
             chunk[1] = out_r.clamp(-1.0, 1.0);
         }
@@ -432,32 +567,28 @@ impl NativeHrtfEngine {
 
         let distance = (dx * dx + dy * dy + dz * dz).sqrt().max(1.0);
 
-        let local_right = dx * listener.right[0] + dy * listener.right[1] + dz * listener.right[2];
-        let local_fwd =
-            dx * listener.forward[0] + dy * listener.forward[1] + dz * listener.forward[2];
-        let local_up = dx * listener.up[0] + dy * listener.up[1] + dz * listener.up[2];
+        // Horizontal view yaw projection (independent of looking pitch up/down)
+        let fwd_h = [listener.forward[0], listener.forward[1]];
+        let fwd_len = (fwd_h[0] * fwd_h[0] + fwd_h[1] * fwd_h[1])
+            .sqrt()
+            .max(0.001);
+        let fwd_norm = [fwd_h[0] / fwd_len, fwd_h[1] / fwd_len];
+        let right_norm = [fwd_norm[1], -fwd_norm[0]]; // 90 deg clockwise in 2D
 
+        // Pure horizontal azimuth calculation
+        let local_fwd = dx * fwd_norm[0] + dy * fwd_norm[1];
+        let local_right = dx * right_norm[0] + dy * right_norm[1];
         let azimuth = local_right.atan2(local_fwd);
-        let elevation = (local_up / distance).clamp(-1.0, 1.0).asin();
-
-        let cos_az = azimuth.cos();
-        let rear_shadow = (-cos_az).max(0.0);
-        let rear_cutoff = 20000.0 - rear_shadow * 14500.0;
-        self.rear_pinna_lpf
-            .set_cutoff(rear_cutoff, self.sample_rate);
-
-        let elevation_notch = if elevation < -0.05 {
-            (-elevation * 1.8).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
 
         let sin_az = azimuth.sin();
+        let cos_az = azimuth.cos();
         let itd_sec = (HEAD_RADIUS / SPEED_OF_SOUND) * (sin_az + azimuth * sin_az.abs());
         let itd_samples = itd_sec * self.sample_rate;
 
-        const CLOSE_RANGE_THRESHOLD: f32 = 70.0;
-        let spatial_blend = ((distance - 15.0) / (CLOSE_RANGE_THRESHOLD - 15.0)).clamp(0.0, 1.0);
+        const CLOSE_RANGE_MIN: f32 = 45.0;
+        const CLOSE_RANGE_MAX: f32 = 120.0;
+        let spatial_blend =
+            ((distance - CLOSE_RANGE_MIN) / (CLOSE_RANGE_MAX - CLOSE_RANGE_MIN)).clamp(0.0, 1.0);
 
         let raw_itd_l = if itd_samples > 0.0 { itd_samples } else { 0.0 };
         let raw_itd_r = if itd_samples < 0.0 { -itd_samples } else { 0.0 };
@@ -474,15 +605,12 @@ impl NativeHrtfEngine {
             (near_ear, blended_far_ear)
         };
 
-        let rear_attenuation = 1.0 - rear_shadow * 0.15;
         let lerp_gain = 0.25;
-        let gain_l = ((self.last_spatial.gain_l
+        let gain_l = (self.last_spatial.gain_l
             + (target_gain_l - self.last_spatial.gain_l) * lerp_gain)
-            * rear_attenuation)
             .max(0.2);
-        let gain_r = ((self.last_spatial.gain_r
+        let gain_r = (self.last_spatial.gain_r
             + (target_gain_r - self.last_spatial.gain_r) * lerp_gain)
-            * rear_attenuation)
             .max(0.2);
 
         let smooth_occl =
@@ -503,7 +631,6 @@ impl NativeHrtfEngine {
 
         let params = SpatialParams {
             azimuth,
-            elevation,
             distance,
             itd_samples_l: itd_l,
             itd_samples_r: itd_r,
@@ -511,8 +638,6 @@ impl NativeHrtfEngine {
             gain_r,
             occlusion: smooth_occl,
             reverb_send: reverb_send.clamp(0.0, 1.0),
-            rear_shadow,
-            elevation_notch,
             is_diffracted,
             diffraction_angle_deg,
         };
@@ -539,7 +664,6 @@ impl NativeHrtfEngine {
         (Self::POSTMIX_FILTER_BASE
             + self.last_spatial.occlusion * Self::POSTMIX_FILTER_OCCLUSION
             + azimuth_mix * Self::POSTMIX_FILTER_AZIMUTH
-            + self.last_spatial.rear_shadow * 0.40
             + dist_factor)
             .clamp(0.01, 0.90)
     }
@@ -554,11 +678,10 @@ impl NativeHrtfEngine {
     pub fn apply_filters(&mut self, in_l: f32, in_r: f32, azimuth: f32) -> (f32, f32) {
         let (occl_l, occl_r) = self.lpf.process(in_l, in_r);
         let (shadow_l, shadow_r) = self.far_ear_lpf.process(occl_l, occl_r);
-        let (rear_l, rear_r) = self.rear_pinna_lpf.process(shadow_l, shadow_r);
         let (out_l, out_r) = if azimuth >= 0.0 {
-            (rear_l, occl_r)
+            (shadow_l, occl_r)
         } else {
-            (occl_l, rear_r)
+            (occl_l, shadow_r)
         };
         self.air_lpf.process(out_l, out_r)
     }
@@ -571,5 +694,4 @@ pub fn init_native_hrtf_engine() {
     if let Ok(mut guard) = NATIVE_HRTF_ENGINE.lock() {
         *guard = Some(engine);
     }
-    eprintln!("[NativeHRTF] High-precision acoustic engine initialized!");
 }

@@ -1,10 +1,11 @@
-use crate::engine::acoustics::get_current_acoustics;
-use crate::engine::native_hrtf::NATIVE_HRTF_ENGINE;
-use crate::engine::sound_hook::is_hrtf_pcm_bypassed;
+use crate::audio::acoustics::get_current_acoustics;
+use crate::audio::hrtf::NATIVE_HRTF_ENGINE;
+use crate::hooks::sound::is_hrtf_pcm_bypassed;
 use crate::utils::cvars::{
     HRTF_ACOUSTICS, HRTF_DEBUG, HRTF_ENABLE, HRTF_REVERB_SCALE, HRTF_VOLUME,
 };
 use std::ffi::{c_char, c_void, CStr, CString};
+#[cfg(unix)]
 use std::fs;
 use std::os::raw::c_int;
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
@@ -159,18 +160,16 @@ unsafe extern "C" fn hrtf_sdl_audio_callback(userdata: *mut c_void, stream: *mut
     }
 
     match state.format {
-        AUDIO_S16SYS
-            if state.channels == 2 && (len as usize).is_multiple_of(std::mem::size_of::<i16>()) =>
-        {
+        AUDIO_S16SYS if state.channels == 2 && (len as usize) % std::mem::size_of::<i16>() == 0 => {
             let sample_count = len as usize / std::mem::size_of::<i16>();
-            let buffer = std::slice::from_raw_parts_mut(stream as *mut i16, sample_count);
+            let buffer =
+                unsafe { std::slice::from_raw_parts_mut(stream as *mut i16, sample_count) };
             let _ = process_interleaved_i16(buffer, state.sample_rate as f32);
         }
-        AUDIO_F32SYS
-            if state.channels == 2 && (len as usize).is_multiple_of(std::mem::size_of::<f32>()) =>
-        {
+        AUDIO_F32SYS if state.channels == 2 && (len as usize) % std::mem::size_of::<f32>() == 0 => {
             let sample_count = len as usize / std::mem::size_of::<f32>();
-            let buffer = std::slice::from_raw_parts_mut(stream as *mut f32, sample_count);
+            let buffer =
+                unsafe { std::slice::from_raw_parts_mut(stream as *mut f32, sample_count) };
             let _ = process_interleaved_f32(buffer, state.sample_rate as f32);
         }
         _ => {}
@@ -224,12 +223,12 @@ fn get_device_format(device_id: SdlAudioDeviceId) -> Option<DeviceAudioFormat> {
 }
 
 fn process_pcm_i16(device: DeviceAudioFormat, data: *const c_void, len: usize) -> Option<Vec<u8>> {
-    if device.channels < 2 || len == 0 || !len.is_multiple_of(2) {
+    if device.channels < 2 || len == 0 || len % 2 != 0 {
         return None;
     }
 
     let frame_width = usize::from(device.channels) * std::mem::size_of::<i16>();
-    if frame_width == 0 || !len.is_multiple_of(frame_width) {
+    if frame_width == 0 || len % frame_width != 0 {
         return None;
     }
 
@@ -266,12 +265,12 @@ fn process_pcm_i16(device: DeviceAudioFormat, data: *const c_void, len: usize) -
 }
 
 fn process_pcm_f32(device: DeviceAudioFormat, data: *const c_void, len: usize) -> Option<Vec<u8>> {
-    if device.channels < 2 || len == 0 || !len.is_multiple_of(4) {
+    if device.channels < 2 || len == 0 || len % 4 != 0 {
         return None;
     }
 
     let frame_width = usize::from(device.channels) * std::mem::size_of::<f32>();
-    if frame_width == 0 || !len.is_multiple_of(frame_width) {
+    if frame_width == 0 || len % frame_width != 0 {
         return None;
     }
 
@@ -307,17 +306,17 @@ fn process_pcm_f32(device: DeviceAudioFormat, data: *const c_void, len: usize) -
     Some(out)
 }
 
-fn update_hrtf_spatial_for_listener(engine: &mut crate::engine::native_hrtf::NativeHrtfEngine) {
-    let listener = crate::engine::sound_hook::get_listener_state();
+fn update_hrtf_spatial_for_listener(engine: &mut crate::audio::hrtf::NativeHrtfEngine) {
+    let listener = crate::hooks::sound::get_listener_state();
     let now = crate::engine::cdll_int::CLIENT_TIME
         .lock()
         .map(|t| *t)
         .unwrap_or(0.0);
 
-    let active_node = if let Ok(nodes) = crate::engine::acoustics_debug::ACTIVE_SOUND_NODES.lock() {
+    let active_node = if let Ok(nodes) = crate::audio::debug::ACTIVE_SOUND_NODES.lock() {
         nodes
             .iter()
-            .filter(|n: &&super::acoustics_debug::SoundDebugNode| !n.is_expired(now))
+            .filter(|n: &&crate::audio::debug::SoundDebugNode| !n.is_expired(now))
             .max_by(|a, b| {
                 let dist_a = ((a.origin[0] - listener.origin[0]).powi(2)
                     + (a.origin[1] - listener.origin[1]).powi(2))
@@ -328,13 +327,13 @@ fn update_hrtf_spatial_for_listener(engine: &mut crate::engine::native_hrtf::Nat
                 .sqrt()
                 .max(30.0);
 
-                let weight_a = crate::engine::sound_hook::sound_threat_weight(&a.sound_name);
-                let weight_b = crate::engine::sound_hook::sound_threat_weight(&b.sound_name);
+                let weight_a = crate::hooks::sound::sound_threat_weight(&a.sound_name);
+                let weight_b = crate::hooks::sound::sound_threat_weight(&b.sound_name);
 
                 let age_a = (now - a.spawn_time).max(0.0);
                 let age_b = (now - b.spawn_time).max(0.0);
-                let freshness_a = (1.0 - age_a / 2.5).clamp(0.1, 1.0);
-                let freshness_b = (1.0 - age_b / 2.5).clamp(0.1, 1.0);
+                let freshness_a = (1.0 - age_a / 1.5).clamp(0.0, 1.0);
+                let freshness_b = (1.0 - age_b / 1.5).clamp(0.0, 1.0);
 
                 let score_a = weight_a * (1000.0 / dist_a) * freshness_a;
                 let score_b = weight_b * (1000.0 / dist_b) * freshness_b;
@@ -347,8 +346,7 @@ fn update_hrtf_spatial_for_listener(engine: &mut crate::engine::native_hrtf::Nat
     };
 
     if let Some(pos) = active_node {
-        let prop =
-            unsafe { crate::engine::acoustics::evaluate_sound_propagation(pos, listener.origin) };
+        let prop = crate::audio::acoustics::evaluate_sound_propagation(pos, listener.origin);
         let active_origin = if prop.is_diffracted {
             prop.diffracted_origin
         } else {
@@ -363,12 +361,17 @@ fn update_hrtf_spatial_for_listener(engine: &mut crate::engine::native_hrtf::Nat
             prop.diffraction_angle_deg,
         );
     } else {
+        // No active 3D sound: neutral center forward position (relative to horizontal heading only)
+        let neutral_fwd = [listener.forward[0], listener.forward[1], 0.0];
+        let len = (neutral_fwd[0] * neutral_fwd[0] + neutral_fwd[1] * neutral_fwd[1])
+            .sqrt()
+            .max(0.01);
         let held_pos = [
-            listener.origin[0] + 120.0 * listener.forward[0],
-            listener.origin[1] + 120.0 * listener.forward[1],
-            listener.origin[2] + 120.0 * listener.forward[2],
+            listener.origin[0] + 120.0 * (neutral_fwd[0] / len),
+            listener.origin[1] + 120.0 * (neutral_fwd[1] / len),
+            listener.origin[2], // strictly at ear height!
         ];
-        engine.compute_spatial_params(held_pos, &listener, 0.0, 1.0, false, 0.0);
+        engine.compute_spatial_params(held_pos, &listener, 0.0, 0.0, false, 0.0);
     }
 }
 fn process_interleaved_i16(buffer: &mut [i16], sample_rate: f32) -> bool {
@@ -481,7 +484,10 @@ pub fn print_audio_hook_status() {
     console_print(&message);
 }
 
+#[allow(unused_variables)]
 pub fn refresh_audio_hooks(client_time: f32) {
+    crate::engine::cdll_int::update_sound_spawner();
+
     #[cfg(all(unix, target_pointer_width = "32"))]
     {
         if AUDIO_QUEUE_HITS.load(Ordering::Relaxed) > 0
@@ -506,11 +512,24 @@ unsafe fn load_symbol_from_libraries(symbol: &CStr, libs: &[&str]) -> *mut c_voi
         let Ok(c_lib) = CString::new(*lib) else {
             continue;
         };
+        #[cfg(unix)]
         let handle = libc::dlopen(c_lib.as_ptr(), libc::RTLD_NOW);
+        #[cfg(windows)]
+        let handle = windows_sys::Win32::System::LibraryLoader::LoadLibraryA(c_lib.as_ptr() as _);
+
         if handle.is_null() {
             continue;
         }
+        #[cfg(unix)]
         let sym = libc::dlsym(handle, symbol.as_ptr());
+        #[cfg(windows)]
+        let sym = windows_sys::Win32::System::LibraryLoader::GetProcAddress(
+            handle as _,
+            symbol.as_ptr() as _,
+        )
+        .map(|f| f as *mut c_void)
+        .unwrap_or(std::ptr::null_mut());
+
         if !sym.is_null() {
             return sym;
         }
@@ -519,7 +538,11 @@ unsafe fn load_symbol_from_libraries(symbol: &CStr, libs: &[&str]) -> *mut c_voi
 }
 
 unsafe fn resolve_sdl_symbol(symbol: &CStr) -> *mut c_void {
+    #[cfg(unix)]
     let next = libc::dlsym(libc::RTLD_NEXT, symbol.as_ptr());
+    #[cfg(not(unix))]
+    let next: *mut c_void = std::ptr::null_mut();
+
     if !next.is_null() {
         return next;
     }
@@ -881,13 +904,62 @@ mod unix_elf {
     }
 }
 
-#[cfg(not(all(unix, target_pointer_width = "32")))]
+#[cfg(all(windows, target_pointer_width = "32"))]
+mod win_patch {
+    use super::*;
+    use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+
+    pub unsafe fn install_win_audio_hooks() {
+        let h_sdl = GetModuleHandleA(b"SDL2.dll\0".as_ptr() as _);
+        if h_sdl.is_null() {
+            return;
+        }
+
+        let resolve = |name: &[u8]| {
+            GetProcAddress(h_sdl, name.as_ptr() as _)
+                .map(|f| f as *mut c_void)
+                .unwrap_or(std::ptr::null_mut())
+        };
+
+        let sym_open_dev = resolve(b"SDL_OpenAudioDevice\0");
+        if !sym_open_dev.is_null() {
+            ORIG_SDL_OPEN_AUDIO_DEVICE.store(sym_open_dev, Ordering::Relaxed);
+        }
+
+        let sym_open = resolve(b"SDL_OpenAudio\0");
+        if !sym_open.is_null() {
+            ORIG_SDL_OPEN_AUDIO.store(sym_open, Ordering::Relaxed);
+        }
+
+        let sym_queue = resolve(b"SDL_QueueAudio\0");
+        if !sym_queue.is_null() {
+            ORIG_SDL_QUEUE_AUDIO.store(sym_queue, Ordering::Relaxed);
+        }
+
+        let sym_close = resolve(b"SDL_CloseAudioDevice\0");
+        if !sym_close.is_null() {
+            ORIG_SDL_CLOSE_AUDIO_DEVICE.store(sym_close, Ordering::Relaxed);
+        }
+    }
+}
+
+#[cfg(not(any(
+    all(unix, target_pointer_width = "32"),
+    all(windows, target_pointer_width = "32")
+)))]
 pub fn install_audio_hooks() {}
 
 #[cfg(all(unix, target_pointer_width = "32"))]
 pub fn install_audio_hooks() {
     unsafe {
         unix_elf::install_elf_hooks();
+    }
+}
+
+#[cfg(all(windows, target_pointer_width = "32"))]
+pub fn install_audio_hooks() {
+    unsafe {
+        win_patch::install_win_audio_hooks();
     }
 }
 
@@ -899,7 +971,9 @@ pub unsafe extern "C" fn SDL_OpenAudioDevice(
     obtained: *mut SdlAudioSpec,
     allowed_changes: c_int,
 ) -> SdlAudioDeviceId {
-    let orig = ensure_original_symbol(&ORIG_SDL_OPEN_AUDIO_DEVICE, c"SDL_OpenAudioDevice");
+    let orig = ensure_original_symbol(&ORIG_SDL_OPEN_AUDIO_DEVICE, unsafe {
+        CStr::from_bytes_with_nul_unchecked(b"SDL_OpenAudioDevice\0")
+    });
     if orig.is_null() {
         return 0;
     }
@@ -965,7 +1039,9 @@ pub unsafe extern "C" fn SDL_OpenAudio(
     desired: *const SdlAudioSpec,
     obtained: *mut SdlAudioSpec,
 ) -> c_int {
-    let orig = ensure_original_symbol(&ORIG_SDL_OPEN_AUDIO, c"SDL_OpenAudio");
+    let orig = ensure_original_symbol(&ORIG_SDL_OPEN_AUDIO, unsafe {
+        CStr::from_bytes_with_nul_unchecked(b"SDL_OpenAudio\0")
+    });
     if orig.is_null() {
         return -1;
     }
@@ -1028,7 +1104,9 @@ pub unsafe extern "C" fn SDL_QueueAudio(
     data: *const c_void,
     len: u32,
 ) -> c_int {
-    let orig = ensure_original_symbol(&ORIG_SDL_QUEUE_AUDIO, c"SDL_QueueAudio");
+    let orig = ensure_original_symbol(&ORIG_SDL_QUEUE_AUDIO, unsafe {
+        CStr::from_bytes_with_nul_unchecked(b"SDL_QueueAudio\0")
+    });
     if orig.is_null() {
         return -1;
     }
@@ -1068,7 +1146,9 @@ pub unsafe extern "C" fn SDL_CloseAudioDevice(dev: SdlAudioDeviceId) {
     forget_device_format(dev);
     unregister_callback_hook(dev);
 
-    let orig = ensure_original_symbol(&ORIG_SDL_CLOSE_AUDIO_DEVICE, c"SDL_CloseAudioDevice");
+    let orig = ensure_original_symbol(&ORIG_SDL_CLOSE_AUDIO_DEVICE, unsafe {
+        CStr::from_bytes_with_nul_unchecked(b"SDL_CloseAudioDevice\0")
+    });
     if orig.is_null() {
         return;
     }

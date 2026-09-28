@@ -184,7 +184,7 @@ pub unsafe extern "C" fn HUD_Redraw(time: c_float, intermission: c_int) -> c_int
 
 #[no_mangle]
 pub unsafe extern "C" fn HUD_StudioEvent(event: *const c_void, entity: *const c_void) {
-    crate::engine::sound_hook::hook_studio_event(event, entity);
+    crate::hooks::sound::hook_studio_event(event, entity);
     if let Some(f) = CL_FUNCS.pStudioEvent {
         f(event, entity);
     }
@@ -200,7 +200,7 @@ pub unsafe extern "C" fn HUD_TempEntUpdate(
     cb_add_vis: *mut c_void,
     cb_sound: *mut c_void,
 ) {
-    let sound_cb = crate::engine::sound_hook::wrap_cb_sound(cb_sound);
+    let sound_cb = crate::hooks::sound::wrap_cb_sound(cb_sound);
     if let Some(f) = CL_FUNCS.pTempEntUpdate {
         f(
             frametime,
@@ -241,7 +241,7 @@ pub unsafe extern "C" fn V_CalcRefdef(pparams: *mut c_void) {
 
 #[no_mangle]
 pub unsafe extern "C" fn HUD_PlayerMove(ppmove: *mut c_void, server: c_int) {
-    crate::engine::sound_hook::hook_player_move(ppmove);
+    crate::hooks::sound::hook_player_move(ppmove);
     if let Some(f) = CL_FUNCS.pClientMove {
         f(ppmove, server);
     }
@@ -249,7 +249,7 @@ pub unsafe extern "C" fn HUD_PlayerMove(ppmove: *mut c_void, server: c_int) {
 
 #[no_mangle]
 pub unsafe extern "C" fn HUD_PlayerMoveInit(ppmove: *mut c_void) {
-    crate::engine::sound_hook::hook_player_move(ppmove);
+    crate::hooks::sound::hook_player_move(ppmove);
     if let Some(f) = CL_FUNCS.pClientMoveInit {
         f(ppmove);
     }

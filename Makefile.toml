@@ -1,27 +1,55 @@
 [tasks.build]
 clear = true
-dependencies = ["cargo-build-release", "copy-so-release"]
+dependencies = ["cargo-build-release", "deploy"]
 
-[tasks.cargo-build]
-command = "cargo"
-args = ["build", "--target", "i686-unknown-linux-gnu"]
-
-[tasks.copy-so]
-script = '''
-mkdir -p /home/$USER/.local/share/Steam/steamapps/common/Half-Life/cstrike/cl_dlls/
-cp target/i686-unknown-linux-gnu/debug/libclient.so /home/$USER/.local/share/Steam/steamapps/common/Half-Life/cstrike/cl_dlls/client.so
-'''
-
-[tasks.build-release]
+[tasks.build-debug]
 clear = true
-dependencies = ["cargo-build-release", "copy-so-release"]
+dependencies = ["cargo-build-debug", "deploy"]
 
 [tasks.cargo-build-release]
 command = "cargo"
+args = ["build", "--release"]
+
+[tasks.cargo-build-release.linux]
+command = "cargo"
 args = ["build", "--release", "--target", "i686-unknown-linux-gnu"]
 
-[tasks.copy-so-release]
-script = '''
-mkdir -p /home/$USER/.local/share/Steam/steamapps/common/Half-Life/cstrike/cl_dlls/
-cp target/i686-unknown-linux-gnu/release/libclient.so /home/$USER/.local/share/Steam/steamapps/common/Half-Life/cstrike/cl_dlls/client.so
-'''
+[tasks.cargo-build-release.windows]
+command = "cargo"
+args = ["build", "--release", "--target", "i686-pc-windows-msvc"]
+
+[tasks.cargo-build-debug]
+command = "cargo"
+args = ["build"]
+
+[tasks.cargo-build-debug.linux]
+command = "cargo"
+args = ["build", "--target", "i686-unknown-linux-gnu"]
+
+[tasks.cargo-build-debug.windows]
+command = "cargo"
+args = ["build", "--target", "i686-pc-windows-msvc"]
+
+[tasks.cargo-build-windows]
+command = "cargo"
+args = ["build", "--release", "--target", "i686-pc-windows-msvc"]
+
+[tasks.cargo-build-windows-gnu]
+command = "cargo"
+args = ["build", "--release", "--target", "i686-pc-windows-gnu"]
+
+[tasks.cargo-build-linux]
+command = "cargo"
+args = ["build", "--release", "--target", "i686-unknown-linux-gnu"]
+
+[tasks.deploy]
+command = "cargo"
+args = ["run", "--bin", "deploy"]
+
+[tasks.install-win]
+clear = true
+dependencies = ["cargo-build-windows", "deploy"]
+
+[tasks.install-linux]
+clear = true
+dependencies = ["cargo-build-linux", "deploy"]

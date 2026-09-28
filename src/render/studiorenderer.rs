@@ -1,6 +1,5 @@
 use crate::engine::sdk::{EngineStudioApi, RStudioInterface};
 use crate::render::gl::*;
-use crate::utils::maths::radians;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub static CAN_OPENGL: AtomicBool = AtomicBool::new(false);
@@ -25,7 +24,7 @@ unsafe fn set_projection_matrix() {
     let aspect = sw / sh;
 
     let vm_fov = crate::view::get_viewmodel_fov();
-    let fov = 0.75 * (radians(vm_fov) * 0.5).tan();
+    let fov = 0.75 * (vm_fov.to_radians() * 0.5).tan();
     if fov == 0.0 {
         return;
     }
