@@ -1,13 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" shape-rendering="crispEdges">
   <rect width="128" height="128" fill="#000000" stroke="#1f1f1f" stroke-width="2"/>
-  
-  <!-- CS 1.6 precise crosshair: 4px thickness, 16px length, 12px gap -->
-  <!-- Top -->
   <rect x="62" y="34" width="4" height="18" fill="#00ff00"/>
-  <!-- Bottom -->
   <rect x="62" y="76" width="4" height="18" fill="#00ff00"/>
-  <!-- Left -->
   <rect x="34" y="62" width="18" height="4" fill="#00ff00"/>
-  <!-- Right -->
   <rect x="76" y="62" width="18" height="4" fill="#00ff00"/>
 </svg>
